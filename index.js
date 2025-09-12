@@ -167,10 +167,23 @@ client.on('messageCreate', async (message) => {
   const command = args.shift().toLowerCase();
 
   if (command === 'join') {
-    if (!message.member.voice.channel) return message.channel.send('You must be in a voice channel');
+    if (!message.member.voice.channel)
+      return message.channel.send('You must be in a voice channel');
+
+    let thread;
+    try {
+      thread = await message.channel.threads.create({
+        name: `voice-${message.author.username}`,
+        autoArchiveDuration: 60,
+      });
+    } catch (e) {
+      console.log('Failed to create thread', e);
+    }
+
+    const outputChannel = thread ?? message.channel;
 
     const player = Manager.create(message.guild.id, {
-      userdata: { channel: message.channel },
+      userdata: { channel: outputChannel },
       selfDeaf: true,
       leaveOnEmpty: false,
       leaveOnEnd: false,
@@ -180,17 +193,19 @@ client.on('messageCreate', async (message) => {
 
     try {
       if (!player.connection) await player.connect(message.member.voice.channel);
-      message.channel.send('Joined your voice channel');
+      outputChannel.send('Joined your voice channel');
     } catch (e) {
       console.log(e);
-      return message.channel.send('Could not join your voice channel');
+      return outputChannel.send('Could not join your voice channel');
     }
   } else if (command === 'say') {
-    const text = args.join(' ').trim();
-    if (!text) return message.channel.send('Usage: !say <text>');
-
     const plr = Manager.get(message.guild.id);
-    if (!plr || !plr.connection) return message.channel.send('Use !join first so I can speak.');
+    const outputChannel = plr?.userdata?.channel || message.channel;
+
+    const text = args.join(' ').trim();
+    if (!text) return outputChannel.send('Usage: !say <text>');
+
+    if (!plr || !plr.connection) return outputChannel.send('Use !join first so I can speak.');
 
     const query = `tts: ${text}`;
 
@@ -239,11 +254,11 @@ client.on('messageCreate', async (message) => {
       }, 1200);
 
       await playPromise;
-      message.channel.send(`🗣️ ${text}`);
+      outputChannel.send(`🗣️ ${text}`);
       // Việc resume/khôi phục volume sẽ do 'trackEnd' xử lý khi TTS kết thúc.
     } catch (err) {
       console.log(err);
-      message.channel.send('Không thể phát TTS lúc này.');
+      outputChannel.send('Không thể phát TTS lúc này.');
     }
   }
 });
