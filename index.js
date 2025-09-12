@@ -1,4 +1,4 @@
-// index.js (ESM) – đã sửa voiceExt(null, {...}) để nhận giọng nói như file cũ
+// index.js (ESM) – giữ nguyên !join, voice control, và TTS nói-chen ổn định
 import 'dotenv/config';
 import {
   Client,
@@ -54,7 +54,7 @@ async function loadSlashCommands() {
   return { slashData, names };
 }
 
-// ── PlayerManager (SỬA CHỖ NÀY: để null ở tham số đầu)
+// ── PlayerManager (voiceExt đúng kiểu cũ: tham số đầu = null để dùng tên mặc định "voiceExt")
 const Manager = new PlayerManager({
   plugins: [
     new TTSPlugin({ defaultLang: 'vi' }),
@@ -62,7 +62,6 @@ const Manager = new PlayerManager({
     new SoundCloudPlugin(),
     new SpotifyPlugin(),
   ],
-  // Đúng kiểu cũ: null => dùng tên mặc định "voiceExt"
   extensions: [new voiceExt(null, { client, lang: 'vi-VN', minimalVoiceMessageDuration: 1 })],
 });
 
@@ -85,33 +84,33 @@ Manager.on('willPlay', (plr, track, upcomming) => {
 });
 
 // ===== Helper: nhận diện track TTS
-const isTTSTrack = (track) => {
-  return (
-    track?.source === 'tts' ||
-    (typeof track?.url === 'string' && track.url.startsWith('tts:')) ||
-    /tts/i.test(track?.title || '') ||
-    /tts/i.test(track?.author || '')
-  );
-};
+const isTTSTrack = (track) =>
+  track?.source === 'tts' ||
+  (typeof track?.url === 'string' && track.url.startsWith('tts:')) ||
+  /tts/i.test(track?.title || '') ||
+  /tts/i.test(track?.author || '');
 
-// Khi TTS kết thúc: resume hoặc khôi phục volume nếu có ducking
+// Khi TTS kết thúc: khôi phục volume / pause lại nếu cần
 Manager.on('trackEnd', (plr, track) => {
   if (!isTTSTrack(track)) return;
 
-  if (plr.userdata?._pausedByTTS) {
-    plr.userdata._pausedByTTS = false;
-    try { plr.resume(); } catch {}
-    plr.userdata?.channel?.send?.('🗣️ Đã nói xong — tiếp tục phát nhạc.');
-  }
+  const u = (plr.userdata ||= {});
 
-  if (plr.userdata?._duckedByTTS) {
-    plr.userdata._duckedByTTS = false;
-    const prev = plr.userdata?._prevVolume;
+  if (u._ttsRestoreVol) {
+    u._ttsRestoreVol = false;
+    const prev = u._ttsPrevVol;
     if (typeof prev === 'number') {
       try { plr.setVolume(prev); } catch {}
     }
-    plr.userdata._prevVolume = undefined;
+    u._ttsPrevVol = undefined;
   }
+
+  if (u._ttsRePause) {
+    u._ttsRePause = false;
+    try { plr.pause(); } catch {}
+  }
+
+  plr.userdata?.channel?.send?.('🗣️ Đã nói xong.');
 });
 
 // ===== Voice control (voiceExt)
@@ -244,7 +243,7 @@ client.on('messageCreate', async (message) => {
       selfDeaf: true,
       leaveOnEmpty: false,
       leaveOnEnd: false,
-      // chọn extension theo TÊN (sẽ khớp vì ta đã đăng ký đúng ở trên)
+      // chọn extension theo TÊN (mặc định "voiceExt")
       extensions: ['voiceExt'],
     });
 
@@ -268,48 +267,34 @@ client.on('messageCreate', async (message) => {
     const query = `tts: ${text}`;
 
     try {
-      // Reset cờ
-      plr.userdata._pausedByTTS = false;
-      plr.userdata._duckedByTTS = false;
+      const u = (plr.userdata ||= {});
+      // Xóa cờ cũ
+      u._ttsRestoreVol = false;
+      u._ttsRePause = false;
+      u._ttsPrevVol = undefined;
 
-      // Ước lượng trạng thái paused
-      const isPaused =
+      // Phát hiện trạng thái pause hiện tại
+      const pausedNow =
         (typeof plr.paused !== 'undefined' && !!plr.paused) ||
         (typeof plr.isPaused === 'function' && !!plr.isPaused());
 
-      // Thử "pause cứng" nếu đang phát
-      let didHardPause = false;
-      if (!isPaused) {
-        try {
-          plr.pause();
-          didHardPause = true;
-          plr.userdata._pausedByTTS = true;
-        } catch {}
+      if (pausedNow) {
+        // Đang pause sẵn -> resume tạm để nói, rồi pause lại khi TTS kết thúc
+        try { plr.resume(); } catch {}
+        u._ttsRePause = true;
+      } else {
+        // Đang phát -> ducking: giảm volume tạm thời
+        u._ttsPrevVol = plr.volume;
+        const duckVol = Math.max(5, Math.floor((plr.volume || 100) * 0.1));
+        try { plr.setVolume(duckVol); } catch {}
+        u._ttsRestoreVol = true;
       }
 
       // Phát TTS
-      const playPromise = plr.play(query, message.author.id).catch(() => null);
+      await plr.play(query, message.author.id);
 
-      // Nếu pause cứng làm TTS không chạy → chuyển sang ducking
-      setTimeout(() => {
-        try {
-          const stillPaused =
-            (typeof plr.paused !== 'undefined' && !!plr.paused) ||
-            (typeof plr.isPaused === 'function' && !!plr.isPaused());
-          if (didHardPause && stillPaused) {
-            plr.userdata._prevVolume = plr.volume;
-            const duckVol = Math.max(5, Math.floor((plr.volume || 100) * 0.1));
-            try { plr.setVolume(duckVol); } catch {}
-            plr.userdata._duckedByTTS = true;
-            plr.userdata._pausedByTTS = false;
-            plr.resume();
-          }
-        } catch {}
-      }, 1200);
-
-      await playPromise;
+      // Thông báo (có thể bỏ nếu không muốn)
       sendEmbed(outputChannel, `🗣️ ${text}`);
-      // Resume/khôi phục volume do 'trackEnd' xử lý
     } catch (err) {
       console.log(err);
       sendEmbed(outputChannel, 'Không thể phát TTS lúc này.');
@@ -319,11 +304,15 @@ client.on('messageCreate', async (message) => {
 
 client.login(process.env.TOKEN);
 
-process.on('uncaughtException', function (err) {
-  console.log('Caught exception: ' + err);
+// ── Lọc bớt log "DAVE decryption failure" (tạm thời từ Discord E2EE)
+const DAVE_ERR = /DAVE decryption failure/i;
+process.on('uncaughtException', (err) => {
+  if (DAVE_ERR.test(err?.message)) return;
+  console.log('Caught exception:', err);
   console.log(err.stack);
 });
-process.on('unhandledRejection', function (err) {
-  console.log('Handled exception: ' + err);
-  console.log(err.stack);
+process.on('unhandledRejection', (err) => {
+  if (DAVE_ERR.test((err && err.message) || String(err))) return;
+  console.log('Handled exception:', err);
+  console.log(err?.stack);
 });
