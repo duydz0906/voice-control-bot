@@ -1,11 +1,19 @@
 // index.js (ESM)
 import 'dotenv/config';
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, EmbedBuilder } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin } from '@ziplayer/plugin';
 import { voiceExt } from '@ziplayer/extension';
+import { readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const prefix = '!';
+
+const sendEmbed = (channel, content) => {
+  const embed = new EmbedBuilder().setDescription(content);
+  return channel.send({ embeds: [embed] });
+};
 
 const client = new Client({
   intents: [
@@ -15,6 +23,17 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+client.commands = new Map();
+const commandsPath = path.join(__dirname, 'commands');
+const commandFiles = readdirSync(commandsPath).filter((file) => file.endsWith('.js'));
+const slashData = [];
+for (const file of commandFiles) {
+  const command = await import(`./commands/${file}`);
+  client.commands.set(command.data.name, command);
+  slashData.push(command.data.toJSON());
+}
 
 const Manager = new PlayerManager({
   plugins: [
@@ -155,8 +174,32 @@ Manager.on('voiceCreate', async (plr, evt) => {
   }
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
+  try {
+    await client.application.commands.set(slashData);
+  } catch (err) {
+    console.log('Failed to register slash commands', err);
+  }
   console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const command = client.commands.get(interaction.commandName);
+  if (!command) return;
+
+  try {
+    await command.execute(interaction, Manager);
+  } catch (err) {
+    console.log(err);
+    const reply = { content: 'There was an error executing that command.', ephemeral: true };
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(reply).catch(() => {});
+    } else {
+      await interaction.reply(reply).catch(() => {});
+    }
+  }
 });
 
 client.on('messageCreate', async (message) => {
@@ -167,10 +210,23 @@ client.on('messageCreate', async (message) => {
   const command = args.shift().toLowerCase();
 
   if (command === 'join') {
-    if (!message.member.voice.channel) return message.channel.send('You must be in a voice channel');
+    if (!message.member.voice.channel)
+      return message.channel.send('You must be in a voice channel');
+
+    let thread;
+    try {
+      thread = await message.channel.threads.create({
+        name: `voice-${message.author.username}`,
+        autoArchiveDuration: 60,
+      });
+    } catch (e) {
+      console.log('Failed to create thread', e);
+    }
+
+    const outputChannel = thread ?? message.channel;
 
     const player = Manager.create(message.guild.id, {
-      userdata: { channel: message.channel },
+      userdata: { channel: outputChannel },
       selfDeaf: true,
       leaveOnEmpty: false,
       leaveOnEnd: false,
@@ -180,17 +236,20 @@ client.on('messageCreate', async (message) => {
 
     try {
       if (!player.connection) await player.connect(message.member.voice.channel);
-      message.channel.send('Joined your voice channel');
+      outputChannel.send('Joined your voice channel');
     } catch (e) {
       console.log(e);
-      return message.channel.send('Could not join your voice channel');
+      return outputChannel.send('Could not join your voice channel');
     }
   } else if (command === 'say') {
-    const text = args.join(' ').trim();
-    if (!text) return message.channel.send('Usage: !say <text>');
-
     const plr = Manager.get(message.guild.id);
-    if (!plr || !plr.connection) return message.channel.send('Use !join first so I can speak.');
+    const outputChannel = plr?.userdata?.channel || message.channel;
+
+    const text = args.join(' ').trim();
+    if (!text) return sendEmbed(outputChannel, 'Usage: !say <text>');
+
+    if (!plr || !plr.connection)
+      return sendEmbed(outputChannel, 'Use !join first so I can speak.');
 
     const query = `tts: ${text}`;
 
@@ -239,14 +298,33 @@ client.on('messageCreate', async (message) => {
       }, 1200);
 
       await playPromise;
-      message.channel.send(`🗣️ ${text}`);
+      sendEmbed(outputChannel, `🗣️ ${text}`);
       // Việc resume/khôi phục volume sẽ do 'trackEnd' xử lý khi TTS kết thúc.
     } catch (err) {
       console.log(err);
-      message.channel.send('Không thể phát TTS lúc này.');
+      sendEmbed(outputChannel, 'Không thể phát TTS lúc này.');
     }
-  }
-});
+    } else if (command === 'help') {
+      sendEmbed(
+        message.channel,
+        [
+          '**Slash Commands**',
+          '/play <query>',
+          '/pause',
+          '/resume',
+          '/skip',
+          '/stop',
+          '/queue',
+          '/ping',
+          '',
+          '**Message Commands**',
+          '!join',
+          '!say <text>',
+          '!help',
+        ].join('\n')
+      );
+    }
+  });
 
 client.login(process.env.TOKEN);
 
