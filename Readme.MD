@@ -9,3 +9,14 @@ Bot phát nhạc + nhận lệnh giọng nói cho Discord. Hỗ trợ YouTube/So
 ## Cài đặt
 ```bash
 npm install
+```
+
+## Slash Commands
+Các lệnh slash được tách thành các file riêng trong thư mục `/commands`.
+- `/play <query>` – thêm bài hát vào hàng đợi
+- `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/ping`
+
+## Message Commands
+- `!join` – tham gia kênh voice và tạo thread
+- `!say <text>` – bot nói TTS (trả lời qua embed)
+- `!help` – liệt kê các lệnh khả dụng
