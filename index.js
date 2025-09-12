@@ -1,6 +1,12 @@
 // index.js (ESM)
 import 'dotenv/config';
-import { Client, GatewayIntentBits, EmbedBuilder } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+} from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin } from '@ziplayer/plugin';
 import { voiceExt } from '@ziplayer/extension';
@@ -184,20 +190,51 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  if (interaction.isChatInputCommand()) {
+    const command = client.commands.get(interaction.commandName);
+    if (!command) return;
 
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
+    try {
+      await command.execute(interaction, Manager);
+    } catch (err) {
+      console.log(err);
+      const reply = { content: 'There was an error executing that command.', ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(reply).catch(() => {});
+      } else {
+        await interaction.reply(reply).catch(() => {});
+      }
+    }
+  } else if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'help-menu') {
+      const menu = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('help-menu')
+          .setPlaceholder('Chọn một danh mục để xem các lệnh')
+          .addOptions([
+            {
+              label: 'Player',
+              value: 'player',
+              description: 'Lệnh trình phát nhạc',
+              emoji: '🎵',
+            },
+          ])
+      );
 
-  try {
-    await command.execute(interaction, Manager);
-  } catch (err) {
-    console.log(err);
-    const reply = { content: 'There was an error executing that command.', ephemeral: true };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(reply).catch(() => {});
-    } else {
-      await interaction.reply(reply).catch(() => {});
+      if (interaction.values[0] === 'player') {
+        const embed = new EmbedBuilder()
+          .setTitle('Ziji Help: Player')
+          .addFields(
+            { name: '/play <query>', value: 'Phát bài hát hoặc thêm vào hàng đợi' },
+            { name: '/pause', value: 'Tạm dừng trình phát' },
+            { name: '/resume', value: 'Tiếp tục phát nhạc' },
+            { name: '/skip', value: 'Bỏ qua bài hiện tại' },
+            { name: '/stop', value: 'Dừng phát và rời kênh' },
+            { name: '/queue', value: 'Xem hàng đợi hiện có' },
+            { name: '/ping', value: 'Kiểm tra độ trễ của bot' }
+          );
+        await interaction.update({ embeds: [embed], components: [menu] });
+      }
     }
   }
 });
