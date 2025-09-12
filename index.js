@@ -1,4 +1,4 @@
-// index.js (ESM) – giữ nguyên !join, voice control, và TTS nói-chen ổn định
+// index.js (ESM) – fix TTS nói-chen chắc chắn + khôi phục volume, giữ nguyên !join
 import 'dotenv/config';
 import {
   Client,
@@ -54,7 +54,14 @@ async function loadSlashCommands() {
   return { slashData, names };
 }
 
-// ── PlayerManager (voiceExt đúng kiểu cũ: tham số đầu = null để dùng tên mặc định "voiceExt")
+// ── TẠO 1 INSTANCE voiceExt dùng chung (đúng như file cũ: tham số đầu = null)
+const voiceExtension = new voiceExt(null, {
+  client,
+  lang: 'vi-VN',
+  minimalVoiceMessageDuration: 1,
+});
+
+// ── PlayerManager
 const Manager = new PlayerManager({
   plugins: [
     new TTSPlugin({ defaultLang: 'vi' }),
@@ -62,7 +69,7 @@ const Manager = new PlayerManager({
     new SoundCloudPlugin(),
     new SpotifyPlugin(),
   ],
-  extensions: [new voiceExt(null, { client, lang: 'vi-VN', minimalVoiceMessageDuration: 1 })],
+  extensions: [voiceExtension], // đăng ký ở cấp Manager
 });
 
 // ===== Basic events
@@ -83,19 +90,21 @@ Manager.on('willPlay', (plr, track, upcomming) => {
   );
 });
 
-// ===== Helper: nhận diện track TTS
+// ===== Helper: nhận diện TTS và khôi phục an toàn
 const isTTSTrack = (track) =>
   track?.source === 'tts' ||
   (typeof track?.url === 'string' && track.url.startsWith('tts:')) ||
   /tts/i.test(track?.title || '') ||
   /tts/i.test(track?.author || '');
 
-// Khi TTS kết thúc: khôi phục volume / pause lại nếu cần
-Manager.on('trackEnd', (plr, track) => {
-  if (!isTTSTrack(track)) return;
+function isPaused(plr) {
+  return (typeof plr.paused !== 'undefined' && !!plr.paused) ||
+         (typeof plr.isPaused === 'function' && !!plr.isPaused());
+}
 
+function restoreAfterTTS(plr) {
   const u = (plr.userdata ||= {});
-
+  // Khôi phục volume nếu đang ở chế độ ducking
   if (u._ttsRestoreVol) {
     u._ttsRestoreVol = false;
     const prev = u._ttsPrevVol;
@@ -104,13 +113,32 @@ Manager.on('trackEnd', (plr, track) => {
     }
     u._ttsPrevVol = undefined;
   }
-
+  // Pause lại nếu đã resume tạm
   if (u._ttsRePause) {
     u._ttsRePause = false;
     try { plr.pause(); } catch {}
   }
+}
 
-  plr.userdata?.channel?.send?.('🗣️ Đã nói xong.');
+// Khi TTS kết thúc: khôi phục volume / pause lại nếu cần
+Manager.on('trackEnd', (plr, track) => {
+  const u = (plr.userdata ||= {});
+  const now = Date.now();
+
+  // Ưu tiên nhận diện đúng TTS
+  if (isTTSTrack(track)) {
+    restoreAfterTTS(plr);
+    u._ttsArmedUntil = 0;
+    plr.userdata?.channel?.send?.('🗣️ Đã nói xong.');
+    return;
+  }
+
+  // Nếu không nhận diện được, nhưng đang trong "cửa sổ TTS"
+  if (u._ttsArmedUntil && now <= u._ttsArmedUntil) {
+    restoreAfterTTS(plr);
+    u._ttsArmedUntil = 0;
+    plr.userdata?.channel?.send?.('🗣️ Đã nói xong.');
+  }
 });
 
 // ===== Voice control (voiceExt)
@@ -243,8 +271,8 @@ client.on('messageCreate', async (message) => {
       selfDeaf: true,
       leaveOnEmpty: false,
       leaveOnEnd: false,
-      // chọn extension theo TÊN (mặc định "voiceExt")
-      extensions: ['voiceExt'],
+      // giữ theo tên + thêm instance để chắc chắn extension được gắn
+      extensions: ['voiceExt', voiceExtension],
     });
 
     try {
@@ -268,32 +296,47 @@ client.on('messageCreate', async (message) => {
 
     try {
       const u = (plr.userdata ||= {});
-      // Xóa cờ cũ
+      // Reset cờ cũ
       u._ttsRestoreVol = false;
       u._ttsRePause = false;
       u._ttsPrevVol = undefined;
 
-      // Phát hiện trạng thái pause hiện tại
-      const pausedNow =
-        (typeof plr.paused !== 'undefined' && !!plr.paused) ||
-        (typeof plr.isPaused === 'function' && !!plr.isPaused());
+      // Cửa sổ TTS để trackEnd/guard có thể nhận diện (15s)
+      u._ttsArmedUntil = Date.now() + 15000;
 
-      if (pausedNow) {
-        // Đang pause sẵn -> resume tạm để nói, rồi pause lại khi TTS kết thúc
+      // 1) Gọi play TTS trước để chắc chắn có track
+      const ok = await plr.play(query, message.author.id).catch((e) => {
+        console.log('TTS play error:', e);
+        return false;
+      });
+      if (!ok) {
+        u._ttsArmedUntil = 0;
+        return sendEmbed(outputChannel, 'Không thể phát TTS lúc này.');
+      }
+
+      // 2) Sau khi play thành công mới xử lý pause/duck
+      if (isPaused(plr)) {
+        // đang pause sẵn -> resume tạm để nói
         try { plr.resume(); } catch {}
         u._ttsRePause = true;
       } else {
-        // Đang phát -> ducking: giảm volume tạm thời
+        // đang phát -> ducking
         u._ttsPrevVol = plr.volume;
         const duckVol = Math.max(5, Math.floor((plr.volume || 100) * 0.1));
         try { plr.setVolume(duckVol); } catch {}
         u._ttsRestoreVol = true;
       }
 
-      // Phát TTS
-      await plr.play(query, message.author.id);
+      // 3) Fallback timer — nếu vì lý do gì đó trackEnd không tới, vẫn khôi phục
+      setTimeout(() => {
+        // chỉ chạy fallback nếu vẫn còn “armed”
+        if ((plr.userdata?._ttsArmedUntil || 0) > 0) {
+          restoreAfterTTS(plr);
+          plr.userdata._ttsArmedUntil = 0;
+        }
+      }, 12000); // 12s: đủ cho hầu hết câu TTS ngắn
 
-      // Thông báo (có thể bỏ nếu không muốn)
+      // Thông báo (tuỳ chọn)
       sendEmbed(outputChannel, `🗣️ ${text}`);
     } catch (err) {
       console.log(err);
@@ -304,7 +347,7 @@ client.on('messageCreate', async (message) => {
 
 client.login(process.env.TOKEN);
 
-// ── Lọc bớt log "DAVE decryption failure" (tạm thời từ Discord E2EE)
+// ── Lọc bớt log "DAVE decryption failure" (từ Discord E2EE)
 const DAVE_ERR = /DAVE decryption failure/i;
 process.on('uncaughtException', (err) => {
   if (DAVE_ERR.test(err?.message)) return;
