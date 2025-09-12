@@ -251,6 +251,7 @@ client.on('messageCreate', async (message) => {
     if (!plr || !plr.connection)
       return sendEmbed(outputChannel, 'Use !join first so I can speak.');
 
+
     const query = `tts: ${text}`;
 
     try {
@@ -303,6 +304,7 @@ client.on('messageCreate', async (message) => {
     } catch (err) {
       console.log(err);
       sendEmbed(outputChannel, 'Không thể phát TTS lúc này.');
+
     }
     } else if (command === 'help') {
       sendEmbed(
