@@ -12,12 +12,27 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction, Manager) {
   const query = interaction.options.getString('query');
-  const plr = Manager.get(interaction.guildId);
-  if (!plr || !plr.connection)
-    return interaction.reply({
-      content: 'Use !join first so I can play music.',
-      ephemeral: true,
+  let plr = Manager.get(interaction.guildId);
+  if (!plr || !plr.connection) {
+    const channel = interaction.member?.voice?.channel;
+    if (!channel)
+      return interaction.reply({
+        content: 'You must be in a voice channel.',
+        ephemeral: true,
+      });
+    plr = Manager.create(interaction.guildId, {
+      userdata: { channel: interaction.channel },
+      selfDeaf: true,
+      leaveOnEmpty: false,
+      leaveOnEnd: false,
     });
+    try {
+      await plr.connect(channel);
+    } catch (e) {
+      console.log(e);
+      return interaction.reply({ content: 'Could not join your voice channel.', ephemeral: true });
+    }
+  }
   try {
     await plr.play(query, interaction.user.id);
     await interaction.reply({ content: `Queued: **${query}**`, ephemeral: true });
