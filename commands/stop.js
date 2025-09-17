@@ -1,15 +1,30 @@
-import { SlashCommandBuilder } from 'discord.js';
+// commands/leave.js
+import { SlashCommandBuilder, MessageFlags } from 'discord.js';
 
 export const data = new SlashCommandBuilder()
-  .setName('stop')
-  .setDescription('Stop the player and clear the queue');
+  .setName('leave')
+  .setDescription('Leave the voice channel');
 
 export async function execute(interaction, Manager) {
   const plr = Manager.get(interaction.guildId);
-  if (!plr || !plr.connection)
-    return interaction.reply({ content: 'Nothing to stop.', ephemeral: true });
+
+  if (!plr || !plr.connection) {
+    return interaction.reply({
+      content: 'I am not in a voice channel.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
   try {
+    // Rời voice channel (giống hành vi bạn dùng ở voice command "disconnect")
     plr.destroy();
-  } catch {}
-  await interaction.reply({ content: '⏹️ Stopped.', ephemeral: true });
+  } catch (e) {
+    // Không chặn lỗi, chỉ log cho biết
+    console.log('leave error:', e);
+  }
+
+  await interaction.reply({
+    content: '👋 Left the voice channel.',
+    flags: MessageFlags.Ephemeral,
+  });
 }
